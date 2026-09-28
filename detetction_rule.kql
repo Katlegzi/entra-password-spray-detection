@@ -1,0 +1,40 @@
+// Advanced Detection: Anomaly-Based Password Spraying on Entra ID
+let lookback = 14d;
+let timeframe = 1h;
+let threshold_multiplier = 3; 
+
+// Step 1: Calculate historical hourly baseline failure rates per IP
+let IP_Baseline = 
+    SigninLogs
+    | where TimeGenerated between (ago(lookback) .. ago(timeframe))
+    | where ResultType in (50126, 50053) 
+    | summarize HistoricalHourlyFailures = count() / (24 * 14) by IPAddress;
+
+// Step 2: Evaluate current activity window against the baseline
+SigninLogs
+| where TimeGenerated >= ago(timeframe)
+| where ResultType in (50126, 50053)
+| summarize 
+    CurrentFailures = count(),
+    TargetedUserCount = dcount(UserPrincipalName),
+    TargetedUsers = make_set(UserPrincipalName, 10),
+    AppList = make_set(AppDisplayName, 5),
+    UserAgents = make_set(UserAgent, 5),
+    Location = make_set(Location, 3)
+    by IPAddress
+| where TargetedUserCount >= 5 
+| join kind=leftouter IP_Baseline on IPAddress
+| extend HistoricalHourlyFailures = coalesce(HistoricalHourlyFailures, 0.1) 
+| extend AnomalyScore = CurrentFailures / HistoricalHourlyFailures
+| where AnomalyScore >= threshold_multiplier
+| project 
+    TimeGenerated = now(),
+    IPAddress, 
+    CurrentFailures, 
+    TargetedUserCount, 
+    AnomalyScore, 
+    TargetedUsers, 
+    AppList, 
+    UserAgents, 
+    Location
+| sort by AnomalyScore desc
